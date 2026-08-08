@@ -1,1 +1,4 @@
 /target
+/natives
+/build
+monolith-finder.jar
