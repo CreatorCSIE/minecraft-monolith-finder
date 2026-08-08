@@ -120,7 +120,7 @@ public final class MonolithMapApp {
                     int mx = Mouse.getX();
                     int my = Mouse.getY();
                     // 向上滚轮 = 放大（stride 缩小）；向下滚轮 = 缩小
-                    zoomBy(dw > 0 ? -1 : 1, mx, my);
+                    zoomBy(dw > 0 ? 1 : -1, mx, my);
                 }
                 // 鼠标左键点击：检测 UI（输入框 / 应用按钮）
                 if (Mouse.getEventButton() == 0 && Mouse.getEventButtonState()) {
