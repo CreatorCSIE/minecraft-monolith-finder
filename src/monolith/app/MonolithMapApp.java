@@ -10,6 +10,10 @@ import org.lwjgl.opengl.DisplayMode;
 import org.lwjgl.opengl.GL11;
 
 import java.awt.Color;
+import java.awt.Toolkit;
+import java.awt.datatransfer.Clipboard;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.StringSelection;
 import java.util.Random;
 
 /**
@@ -64,16 +68,16 @@ public final class MonolithMapApp {
     // 坐标显示缓冲：位置变化（拖动/缩放）时更新，静止时保持；切换焦点不重置
     private long lastXVal = Long.MIN_VALUE, lastZVal = Long.MIN_VALUE;
     // 种子输入框（左上角）与回调按钮
-    private static final int FIELD_X = 10, FIELD_Y = 10, FIELD_W = 280, FIELD_H = 40;
-    private static final int BTN_X = 296, BTN_Y = 10, BTN_W = 64, BTN_H = 40;
+    private static final int FIELD_X = 10, FIELD_Y = 10, FIELD_W = 320, FIELD_H = 40;
+    private static final int BTN_X = 340, BTN_Y = 10, BTN_W = 64, BTN_H = 40;
     // 坐标输入区（左下角）：X: [输入框] Z: [输入框] 应用
     private static final int CFIELD_H = 40;
-    private static final int CX_FIELD_X = 44, CX_FIELD_W = 130;   // X 输入框
-    private static final int CZ_FIELD_X = 222, CZ_FIELD_W = 130;  // Z 输入框
+    private static final int CX_FIELD_X = 44, CX_FIELD_W = 134;   // X 输入框
+    private static final int CZ_FIELD_X = 222, CZ_FIELD_W = 134;  // Z 输入框
     private static final int CB_X = 362, CB_W = 64, CB_H = 40;    // 应用按钮
 
     public static void main(String[] args) {
-        long seed = new java.util.Random().nextLong() & 0xFFFFFFFFFFFFL;
+        long seed = new java.util.Random().nextLong();
         if (args.length > 0) {
             try {
                 seed = Long.parseLong(args[0]);
@@ -100,6 +104,7 @@ public final class MonolithMapApp {
         try {
             Mouse.create();
             Keyboard.create();
+            Keyboard.enableRepeatEvents(true);   // 长按数字/退格时产生重复输入
         } catch (LWJGLException e) {
             System.err.println("无法初始化输入设备: " + e.getMessage());
             e.printStackTrace();
@@ -202,13 +207,25 @@ public final class MonolithMapApp {
                 }
                 int key = Keyboard.getEventKey();
                 char c = Keyboard.getEventCharacter();
-                if (c >= '0' && c <= '9' || c == '-') {
+                boolean ctrl = Keyboard.isKeyDown(Keyboard.KEY_LCONTROL) || Keyboard.isKeyDown(Keyboard.KEY_RCONTROL);
+                if (ctrl && Keyboard.isRepeatEvent()) {
+                    // 长按重复事件：跳过剪贴板快捷键，避免连续粘贴/复制
+                } else if (ctrl && key == Keyboard.KEY_C) {
+                    copySelection(f);
+                } else if (ctrl && key == Keyboard.KEY_X) {
+                    cutSelection(f);
+                } else if (ctrl && key == Keyboard.KEY_V) {
+                    pasteToField(f);
+                } else if (ctrl && key == Keyboard.KEY_A) {
+                    selArr[f] = 0;
+                    caretArr[f] = inputText(f).length();
+                } else if (c >= '0' && c <= '9' || c == '-') {
                     int sel = selArr[f], cr = caretArr[f];
                     if (sel != -1 && sel != cr) {
                         deleteSelection(f);
                     }
                     String t = inputText(f);
-                    if (t.length() < (isSeed ? 19 : 12)) {
+                    if (t.length() < (isSeed ? 20 : 14)) {
                         int c2 = caretArr[f];
                         t = t.substring(0, c2) + c + t.substring(c2);
                         setInputText(f, t);
@@ -242,7 +259,7 @@ public final class MonolithMapApp {
             int key = Keyboard.getEventKey();
             switch (key) {
                 case Keyboard.KEY_R: {
-                    long r = new Random().nextLong() & 0xFFFFFFFFFFFFL;
+                    long r = new Random().nextLong();
                     setSeed(r);
                     break;
                 }
@@ -446,6 +463,88 @@ public final class MonolithMapApp {
         setInputText(f, t);
         caretArr[f] = lo;
         selArr[f] = -1;
+    }
+
+    /** 选区起点（无选区返回 -1）。 */
+    private int selectionStart(int f) {
+        int sel = selArr[f], cr = caretArr[f];
+        return (sel == -1 || sel == cr) ? -1 : Math.min(cr, sel);
+    }
+
+    /** 选区终点（无选区返回 -1）。 */
+    private int selectionEnd(int f) {
+        int sel = selArr[f], cr = caretArr[f];
+        return (sel == -1 || sel == cr) ? -1 : Math.max(cr, sel);
+    }
+
+    /** 复制选中文本到系统剪贴板。 */
+    private void copySelection(int f) {
+        int s = selectionStart(f), e = selectionEnd(f);
+        if (s == -1) {
+            return;
+        }
+        setClipboard(inputText(f).substring(s, e));
+    }
+
+    /** 剪切选中文本到系统剪贴板。 */
+    private void cutSelection(int f) {
+        int s = selectionStart(f), e = selectionEnd(f);
+        if (s == -1) {
+            return;
+        }
+        setClipboard(inputText(f).substring(s, e));
+        deleteSelection(f);
+    }
+
+    /** 从系统剪贴板粘贴到输入框（过滤非法字符并截断到最大长度）。 */
+    private void pasteToField(int f) {
+        String clip = getClipboard();
+        if (clip == null) {
+            return;
+        }
+        boolean isSeed = (f == 1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < clip.length(); i++) {
+            char ch = clip.charAt(i);
+            if (ch >= '0' && ch <= '9' || ch == '-' || (!isSeed && (ch == '.' || ch == '+'))) {
+                sb.append(ch);
+            }
+        }
+        String s = sb.toString();
+        if (s.isEmpty()) {
+            return;
+        }
+        int st = selectionStart(f), en = selectionEnd(f);
+        if (st == -1) {
+            st = caretArr[f];
+            en = st;
+        }
+        int maxLen = isSeed ? 20 : 14;
+        String cur = inputText(f);
+        String newText = cur.substring(0, st) + s + cur.substring(en);
+        if (newText.length() > maxLen) {
+            newText = newText.substring(0, maxLen);
+        }
+        setInputText(f, newText);
+        caretArr[f] = Math.min(st + s.length(), newText.length());
+        selArr[f] = -1;
+    }
+
+    private void setClipboard(String s) {
+        try {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(s), null);
+        } catch (Exception ignored) {
+            // 剪贴板不可用则忽略
+        }
+    }
+
+    private String getClipboard() {
+        try {
+            Clipboard cb = Toolkit.getDefaultToolkit().getSystemClipboard();
+            return (String) cb.getData(DataFlavor.stringFlavor);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     /** 读取指定输入框的文本。 */
@@ -734,7 +833,7 @@ public final class MonolithMapApp {
     }
 
     private void setSeed(long newSeed) {
-        this.seed = newSeed & 0xFFFFFFFFFFFFL;
+        this.seed = newSeed;
         this.gen = new ChunkGenerator(seed);
         if (cache != null) {
             cache.shutdown();
