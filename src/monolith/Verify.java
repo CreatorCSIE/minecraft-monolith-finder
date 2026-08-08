@@ -69,7 +69,8 @@ public final class Verify {
             dir = new File(".");
         }
         int stride = 1;
-        var img = TileRenderer.renderTile(gen, new Coord.BlockPos2D(-2624, 4343), stride);
+        java.awt.image.BufferedImage img =
+                TileRenderer.renderTile(gen, new Coord.BlockPos2D(-2624, 4343), stride);
         File png = new File(dir, "tile_preview.png");
         ImageIO.write(img, "png", png);
         System.out.println("已输出瓦片预览: " + png.getAbsolutePath());
