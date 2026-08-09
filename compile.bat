@@ -10,30 +10,18 @@ rem clean previous build
 if exist build rmdir /s /q build
 mkdir build
 
-rem extract native libraries on first build
-if not exist natives (
-  echo Extracting native libraries to natives\ ...
-  mkdir natives
-  tar -xf lib\windows_natives.jar -C natives
-)
+rem LWJGL3: native libs load automatically from the natives jars on the classpath.
 
 echo Compiling...
 dir /s /b src\*.java > sources.txt
-javac -encoding UTF-8 -d build -cp "lib\lwjgl.jar;lib\lwjgl_util.jar;lib\jinput.jar" @sources.txt
+javac -encoding UTF-8 -d build -cp "lib\*" @sources.txt
 if errorlevel 1 (
   del sources.txt
   goto :eof
 )
 del sources.txt
 
-echo Merging library classes into build...
-pushd build
-jar xf ..\lib\lwjgl.jar
-jar xf ..\lib\lwjgl_util.jar
-jar xf ..\lib\jinput.jar
-popd
-
-echo Packaging monolith-finder.jar ...
+echo Packaging monolith-finder.jar (app classes only; LWJGL3 jars stay separate on the classpath)...
 jar cfe monolith-finder.jar monolith.app.MonolithMapApp -C build .
 
 echo Done. Run with run.bat [seed]

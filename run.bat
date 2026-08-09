@@ -13,6 +13,6 @@ if not exist monolith-finder.jar (
   goto :eof
 )
 
-java "-Djava.library.path=natives" -jar monolith-finder.jar %*
+java -cp "monolith-finder.jar;lib\*" monolith.app.MonolithMapApp %*
 
 endlocal

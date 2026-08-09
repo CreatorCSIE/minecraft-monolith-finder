@@ -2,11 +2,9 @@ package monolith.app;
 
 import monolith.core.ChunkGenerator;
 import monolith.render.TextRenderer;
-import org.lwjgl.LWJGLException;
-import org.lwjgl.input.Keyboard;
-import org.lwjgl.input.Mouse;
-import org.lwjgl.opengl.Display;
-import org.lwjgl.opengl.DisplayMode;
+import org.lwjgl.BufferUtils;
+import org.lwjgl.glfw.GLFW;
+import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
 
 import java.awt.Color;
@@ -14,10 +12,12 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
+import java.nio.DoubleBuffer;
+import java.util.ArrayDeque;
 import java.util.Random;
 
 /**
- * Monolith Finder 渲染 App（LWJGL2 / OpenGL）。
+ * Monolith Finder 渲染 App（LWJGL3 / GLFW / OpenGL 兼容上下文）。
  *
  * 复刻网页版 monolith-renderer 的瓦片地图：平移、缩放、切换种子。
  * 缩放级别由 stride（每像素方块数）决定，stride = 2^k，k ∈ [0, 14]。
@@ -30,8 +30,8 @@ import java.util.Random;
  *   - R：随机种子
  *   - Esc：退出
  *
- * 运行（需先导入 LWJGL2 jar 与 natives）：
- *   java -cp "out;lwjgl.jar;lwjgl_util.jar" -Djava.library.path=natives monolith.app.MonolithMapApp [seed]
+ * 运行（LWJGL3，natives 随 classpath 自动加载，无需解压）：
+ *   java -cp "monolith-finder.jar;lib/*" monolith.app.MonolithMapApp [seed]
  */
 public final class MonolithMapApp {
     private static final int WIN_W = 1024;
@@ -47,6 +47,14 @@ public final class MonolithMapApp {
     private ChunkGenerator gen;
     private TileCache cache;
     private volatile boolean running = true;
+
+    // GLFW 状态：窗口句柄 + 输入事件队列（回调在主线程 glfwPollEvents 时触发，无需加锁）
+    private long window;
+    private boolean mouseLeftDown;
+    private final ArrayDeque<int[]> keyEvents = new ArrayDeque<>();       // {key, action, mods}
+    private final ArrayDeque<Integer> charEvents = new ArrayDeque<>();    // codepoint
+    private final ArrayDeque<int[]> mouseButtonEvents = new ArrayDeque<>(); // {button, action, x, y(向下)}
+    private final ArrayDeque<double[]> scrollEvents = new ArrayDeque<>();  // {xoff, yoff}
 
     // 视图状态
     private double centerX = 0;   // 方块坐标
@@ -90,55 +98,61 @@ public final class MonolithMapApp {
 
     private void run(long initialSeed) {
         setSeed(initialSeed);
-        try {
-            Display.setDisplayMode(new DisplayMode(WIN_W, WIN_H));
-            Display.setTitle(title());
-            Display.setResizable(true);   // 允许拖动边缘改变大小 / 最大化
-            Display.create();
-        } catch (LWJGLException e) {
-            System.err.println("无法创建 LWJGL2 显示窗口。请确认已配置 lwjgl.jar 与 natives。");
-            e.printStackTrace();
+
+        if (!GLFW.glfwInit()) {
+            System.err.println("无法初始化 GLFW。请确认已配置 LWJGL3 库。");
             return;
         }
 
-        try {
-            Mouse.create();
-            Keyboard.create();
-            Keyboard.enableRepeatEvents(true);   // 长按数字/退格时产生重复输入
-        } catch (LWJGLException e) {
-            System.err.println("无法初始化输入设备: " + e.getMessage());
-            e.printStackTrace();
-            Display.destroy();
+        // 兼容上下文：保留立即模式（glBegin/glEnd/glOrtho），无需改动渲染代码
+        GLFW.glfwDefaultWindowHints();
+        GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MAJOR, 3);
+        GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MINOR, 2);
+        GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_PROFILE, GLFW.GLFW_OPENGL_COMPAT_PROFILE);
+        GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_FORWARD_COMPAT, GLFW.GLFW_FALSE);
+        GLFW.glfwWindowHint(GLFW.GLFW_RESIZABLE, GLFW.GLFW_TRUE);   // 允许拖动边缘改变大小 / 最大化
+
+        window = GLFW.glfwCreateWindow(WIN_W, WIN_H, title(), 0, 0);
+        if (window == 0) {
+            System.err.println("无法创建 GLFW 窗口。");
+            GLFW.glfwTerminate();
             return;
         }
+        GLFW.glfwMakeContextCurrent(window);
+        GL.createCapabilities();
+        GLFW.glfwSwapInterval(1);   // 垂直同步，替代 Display.sync(60)
 
+        setupCallbacks();
         initGL();
 
-        int lastMx = Mouse.getX();
-        int lastMy = Mouse.getY();
+        double[] c0 = cursorPos();
+        int lastMx = (int) c0[0];
+        int lastMy = (int) c0[1];
 
-        while (!Display.isCloseRequested() && running) {
+        while (!GLFW.glfwWindowShouldClose(window) && running) {
             // 缩放（滚轮）
-            while (Mouse.next()) {
-                int dw = Mouse.getEventDWheel();
+            while (!scrollEvents.isEmpty()) {
+                double[] e = scrollEvents.poll();
+                double dw = e[1];
                 if (dw != 0) {
-                    int mx = Mouse.getX();
-                    int my = Mouse.getY();
+                    double[] cp = cursorPos();   // cp[1] 为 y 向上（与 LWJGL2 的 Mouse.getY 一致）
                     // 向上滚轮 = 放大（stride 缩小）；向下滚轮 = 缩小
-                    zoomBy(dw > 0 ? 1 : -1, mx, my);
+                    zoomBy(dw > 0 ? 1 : -1, (int) cp[0], (int) cp[1]);
                 }
-                // 鼠标左键点击：检测 UI（输入框 / 应用按钮）
-                if (Mouse.getEventButton() == 0 && Mouse.getEventButtonState()) {
-                    int mx = Mouse.getEventX();
-                    int mySprite = winH - Mouse.getEventY();
-                    handleUiClick(mx, mySprite);
+            }
+            // 鼠标左键点击：检测 UI（输入框 / 应用按钮）——回调已存 y 向下坐标
+            while (!mouseButtonEvents.isEmpty()) {
+                int[] e = mouseButtonEvents.poll();
+                if (e[0] == 0 && e[2] == GLFW.GLFW_PRESS) {   // button==0（左键）&& 按下
+                    handleUiClick(e[1], e[3]);
                 }
             }
 
             // 平移（左键拖拽）
-            int mx = Mouse.getX();
-            int my = Mouse.getY();
-            if (Mouse.isButtonDown(0) && !suppressPan) {
+            double[] cp = cursorPos();
+            int mx = (int) cp[0];
+            int my = (int) cp[1];   // y 向上
+            if (mouseLeftDown && !suppressPan) {
                 int ry = winH - my;
                 int lastRy = winH - lastMy;
                 int dpx = mx - lastMx;
@@ -148,14 +162,15 @@ public final class MonolithMapApp {
                 centerZ -= dry * bpp;
             }
             // 输入框内拖拽选字：按住左键在框内移动时更新光标位置
-            if (dragField != 0 && Mouse.isButtonDown(0)) {
-                int mix = Mouse.getX();
-                int miy = winH - Mouse.getY();
+            if (dragField != 0 && mouseLeftDown) {
+                double[] cp2 = cursorPos();
+                int mix = (int) cp2[0];
+                int miy = winH - (int) cp2[1];   // y 向下，匹配 pointInField
                 if (pointInField(mix, miy, dragField)) {
                     caretArr[dragField] = charIndexAtX(inputText(dragField), mix - fieldTextX0(dragField));
                 }
             }
-            if (!Mouse.isButtonDown(0)) {
+            if (!mouseLeftDown) {
                 dragField = 0;
                 suppressPan = false;
             }
@@ -165,23 +180,49 @@ public final class MonolithMapApp {
             // 键盘
             handleKeyboard();
 
-            // 窗口尺寸变化（拖动边缘 / 最大化）：更新视口与投影
-            if (Display.wasResized()) {
-                winW = Display.getWidth();
-                winH = Display.getHeight();
-                GL11.glViewport(0, 0, winW, winH);
-                GL11.glMatrixMode(GL11.GL_PROJECTION);
-                GL11.glLoadIdentity();
-                GL11.glOrtho(0, winW, winH, 0, -1, 1);
-                GL11.glMatrixMode(GL11.GL_MODELVIEW);
-            }
-
             render();
-            Display.update();
-            Display.sync(60);
+            GLFW.glfwSwapBuffers(window);
+            GLFW.glfwPollEvents();   // 同时触发回调填充分派事件
         }
 
         cleanup();
+    }
+
+    /** 注册 GLFW 输入/尺寸回调：把事件压入队列，主循环统一处理。 */
+    private void setupCallbacks() {
+        GLFW.glfwSetKeyCallback(window, (win, key, scancode, action, mods) ->
+                keyEvents.add(new int[]{key, action, mods}));
+        GLFW.glfwSetCharCallback(window, (win, codepoint) ->
+                charEvents.add(codepoint));
+        GLFW.glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+            DoubleBuffer x = BufferUtils.createDoubleBuffer(1);
+            DoubleBuffer y = BufferUtils.createDoubleBuffer(1);
+            GLFW.glfwGetCursorPos(win, x, y);
+            mouseButtonEvents.add(new int[]{button, action, (int) x.get(0), (int) y.get(0)}); // x, y 向下
+            if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+                mouseLeftDown = (action != GLFW.GLFW_RELEASE);
+            }
+        });
+        GLFW.glfwSetScrollCallback(window, (win, xoff, yoff) ->
+                scrollEvents.add(new double[]{xoff, yoff}));
+        // 窗口尺寸变化（拖动边缘 / 最大化）：更新视口与投影
+        GLFW.glfwSetFramebufferSizeCallback(window, (win, w, h) -> {
+            winW = w;
+            winH = h;
+            GL11.glViewport(0, 0, winW, winH);
+            GL11.glMatrixMode(GL11.GL_PROJECTION);
+            GL11.glLoadIdentity();
+            GL11.glOrtho(0, winW, winH, 0, -1, 1);
+            GL11.glMatrixMode(GL11.GL_MODELVIEW);
+        });
+    }
+
+    /** 当前光标位置，返回 {x, y向上}（y 从窗口底部向上，与 LWJGL2 的 Mouse.getY 一致）。 */
+    private double[] cursorPos() {
+        DoubleBuffer x = BufferUtils.createDoubleBuffer(1);
+        DoubleBuffer y = BufferUtils.createDoubleBuffer(1);
+        GLFW.glfwGetCursorPos(window, x, y);
+        return new double[]{x.get(0), winH - y.get(0)};
     }
 
     private void initGL() {
@@ -201,38 +242,26 @@ public final class MonolithMapApp {
         if (focusField != 0) {
             int f = focusField;
             boolean isSeed = (f == 1);
-            while (Keyboard.next()) {
-                if (!Keyboard.getEventKeyState()) {
+            while (!keyEvents.isEmpty()) {
+                int[] e = keyEvents.poll();
+                int key = e[0], action = e[2], mods = e[3];
+                if (action != GLFW.GLFW_PRESS) {
                     continue;
                 }
-                int key = Keyboard.getEventKey();
-                char c = Keyboard.getEventCharacter();
-                boolean ctrl = Keyboard.isKeyDown(Keyboard.KEY_LCONTROL) || Keyboard.isKeyDown(Keyboard.KEY_RCONTROL);
-                if (ctrl && Keyboard.isRepeatEvent()) {
-                    // 长按重复事件：跳过剪贴板快捷键，避免连续粘贴/复制
-                } else if (ctrl && key == Keyboard.KEY_C) {
-                    copySelection(f);
-                } else if (ctrl && key == Keyboard.KEY_X) {
-                    cutSelection(f);
-                } else if (ctrl && key == Keyboard.KEY_V) {
-                    pasteToField(f);
-                } else if (ctrl && key == Keyboard.KEY_A) {
-                    selArr[f] = 0;
-                    caretArr[f] = inputText(f).length();
-                } else if (c >= '0' && c <= '9' || c == '-') {
-                    int sel = selArr[f], cr = caretArr[f];
-                    if (sel != -1 && sel != cr) {
-                        deleteSelection(f);
+                boolean ctrl = (mods & GLFW.GLFW_MOD_CONTROL) != 0;
+                if (ctrl && action != GLFW.GLFW_REPEAT) {
+                    // 剪贴板 / 全选快捷键（跳过长按重复，避免连续粘贴/复制）
+                    if (key == GLFW.GLFW_KEY_C) {
+                        copySelection(f);
+                    } else if (key == GLFW.GLFW_KEY_X) {
+                        cutSelection(f);
+                    } else if (key == GLFW.GLFW_KEY_V) {
+                        pasteToField(f);
+                    } else if (key == GLFW.GLFW_KEY_A) {
+                        selArr[f] = 0;
+                        caretArr[f] = inputText(f).length();
                     }
-                    String t = inputText(f);
-                    if (t.length() < (isSeed ? 20 : 14)) {
-                        int c2 = caretArr[f];
-                        t = t.substring(0, c2) + c + t.substring(c2);
-                        setInputText(f, t);
-                        caretArr[f] = c2 + 1;
-                    }
-                    selArr[f] = -1;
-                } else if (key == Keyboard.KEY_BACK) {
+                } else if (key == GLFW.GLFW_KEY_BACKSPACE) {
                     int sel = selArr[f], cr = caretArr[f];
                     if (sel != -1 && sel != cr) {
                         deleteSelection(f);
@@ -243,36 +272,63 @@ public final class MonolithMapApp {
                         caretArr[f] = cr - 1;
                     }
                     selArr[f] = -1;
-                } else if (key == Keyboard.KEY_RETURN || key == Keyboard.KEY_NUMPADENTER) {
+                } else if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
                     if (isSeed) applySeedInput(); else applyCoordInput();
-                } else if (key == Keyboard.KEY_ESCAPE) {
+                } else if (key == GLFW.GLFW_KEY_ESCAPE) {
                     focusField = 0;
+                }
+            }
+            // 字符输入（聚焦时）：插入数字 / 负号；Ctrl 组合键不产生插入
+            boolean ctrl = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS
+                        || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+            if (!ctrl) {
+                while (!charEvents.isEmpty()) {
+                    char c = (char) (int) charEvents.poll();
+                    if (c >= '0' && c <= '9' || c == '-') {
+                        int sel = selArr[f], cr = caretArr[f];
+                        if (sel != -1 && sel != cr) {
+                            deleteSelection(f);
+                        }
+                        String t = inputText(f);
+                        if (t.length() < (isSeed ? 20 : 14)) {
+                            int c2 = caretArr[f];
+                            t = t.substring(0, c2) + c + t.substring(c2);
+                            setInputText(f, t);
+                            caretArr[f] = c2 + 1;
+                        }
+                        selArr[f] = -1;
+                    }
                 }
             }
             return;
         }
 
-        while (Keyboard.next()) {
-            if (!Keyboard.getEventKeyState()) {
+        charEvents.clear();   // 无输入框聚焦时丢弃字符输入，避免聚焦后残留插入
+
+        while (!keyEvents.isEmpty()) {
+            int[] e = keyEvents.poll();
+            int key = e[0], action = e[2];
+            if (action != GLFW.GLFW_PRESS) {
                 continue;
             }
-            int key = Keyboard.getEventKey();
             switch (key) {
-                case Keyboard.KEY_R: {
+                case GLFW.GLFW_KEY_R: {
                     long r = new Random().nextLong();
                     setSeed(r);
                     break;
                 }
-                case Keyboard.KEY_ESCAPE: {
+                case GLFW.GLFW_KEY_ESCAPE: {
                     running = false;
                     break;
                 }
-                case Keyboard.KEY_EQUALS: case Keyboard.KEY_ADD: {
-                    zoomBy(1, Mouse.getX(), Mouse.getY());
+                case GLFW.GLFW_KEY_EQUAL: case GLFW.GLFW_KEY_KP_ADD: {
+                    double[] cp = cursorPos();
+                    zoomBy(1, (int) cp[0], (int) cp[1]);
                     break;
                 }
-                case Keyboard.KEY_MINUS: case Keyboard.KEY_SUBTRACT: {
-                    zoomBy(-1, Mouse.getX(), Mouse.getY());
+                case GLFW.GLFW_KEY_MINUS: case GLFW.GLFW_KEY_KP_SUBTRACT: {
+                    double[] cp = cursorPos();
+                    zoomBy(-1, (int) cp[0], (int) cp[1]);
                     break;
                 }
                 default: break;
@@ -282,10 +338,10 @@ public final class MonolithMapApp {
         // 连续平移
         double bpp = blocksPerPixel();
         double pan = 24 * bpp;
-        if (Keyboard.isKeyDown(Keyboard.KEY_LEFT) || Keyboard.isKeyDown(Keyboard.KEY_A)) centerX -= pan;
-        if (Keyboard.isKeyDown(Keyboard.KEY_RIGHT) || Keyboard.isKeyDown(Keyboard.KEY_D)) centerX += pan;
-        if (Keyboard.isKeyDown(Keyboard.KEY_UP) || Keyboard.isKeyDown(Keyboard.KEY_W)) centerZ -= pan;
-        if (Keyboard.isKeyDown(Keyboard.KEY_DOWN) || Keyboard.isKeyDown(Keyboard.KEY_S)) centerZ += pan;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_A) == GLFW.GLFW_PRESS) centerX -= pan;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_D) == GLFW.GLFW_PRESS) centerX += pan;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_UP) == GLFW.GLFW_PRESS || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_W) == GLFW.GLFW_PRESS) centerZ -= pan;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_S) == GLFW.GLFW_PRESS) centerZ += pan;
     }
 
     private void render() {
@@ -363,8 +419,6 @@ public final class MonolithMapApp {
 
         drawCrosshair();
         drawUI();
-
-        Display.setTitle(title());
     }
 
     /** 画面中心绘制 MC 样式反色十字准星（16x16，位于调试坐标中心）。 */
@@ -858,8 +912,7 @@ public final class MonolithMapApp {
             cache.shutdown();
             cache.clear();
         }
-        Mouse.destroy();
-        Keyboard.destroy();
-        Display.destroy();
+        GLFW.glfwDestroyWindow(window);
+        GLFW.glfwTerminate();
     }
 }

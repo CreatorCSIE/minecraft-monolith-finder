@@ -2,9 +2,9 @@ name: build
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ lwjgl3 ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ lwjgl3 ]
 
 jobs:
   build:
@@ -23,7 +23,7 @@ jobs:
         run: |
           mkdir -p build
           javac -encoding UTF-8 -d build \
-            -cp "lib/lwjgl.jar:lib/lwjgl_util.jar:lib/jinput.jar" \
+            -cp "lib/*" \
             $(find src -name '*.java')
 
       - name: Verify core algorithm
