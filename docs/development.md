@@ -4,7 +4,7 @@
 
 ## 概览
 
-本项目是用 **Java + LWJGL2（OpenGL 1.1 固定管线）** 移植的 monolith 查找器。算法逻辑与 Rust 网页版 [monolith-renderer](https://github.com/kahomayo/monolith-renderer) 保持 **bit-exact** 一致，渲染则改为原生窗口 + 异步瓦片加载。
+本项目是用 **Java + LWJGL3（GLFW + OpenGL 兼容上下文，立即模式）** 移植的 monolith 查找器。算法逻辑与 Rust 网页版 [monolith-renderer](https://github.com/kahomayo/monolith-renderer) 保持 **bit-exact** 一致，渲染则改为原生窗口（GLFW）+ 异步瓦片加载。
 
 ## 目录结构
 
@@ -24,8 +24,8 @@ src/monolith/
 ├── render/
 │   ├── TileRenderer.java    把一块区域栅格化为 BufferedImage（上色）
 │   └── TextRenderer.java    用 AWT 把文字渲染为 OpenGL 纹理
-└── app/
-    ├── MonolithMapApp.java  主窗口、主循环、输入与 UI
+└──├── app/
+    ├── MonolithMapApp.java  主窗口（GLFW）、主循环、输入与 UI
     ├── TileCache.java       异步瓦片缓存 + 后台线程池
     └── ...
 Verify.java                  与 Rust 测试向量的 bit-exact 校验
@@ -36,14 +36,14 @@ Verify.java                  与 Rust 测试向量的 bit-exact 校验
 `compile.bat` 负责：
 
 1. 清理并编译 `src/` 到 `build/`；
-2. 解压 `lib/windows_natives.jar` 到 `natives/`（首次）；
-3. 把 lwjgl/jinput 库类合并进 `build/`；
-4. 用 `jar` 打包成根目录 `monolith-finder.jar`（含 `Main-Class`）。
+2. 用 `jar` 打包成根目录 `monolith-finder.jar`（含 `Main-Class`）。
 
-`run.bat [seed]` 只运行该 jar：
+> LWJGL3 的 native 库随 classpath 中的 natives jar 自动加载，无需解压到 `natives/`，也不合并进产物 jar。
+
+`run.bat [seed]` 通过 classpath 同时引用应用 jar 与 LWJGL3 库：
 
 ```bat
-java "-Djava.library.path=natives" -jar monolith-finder.jar %*
+java -cp "monolith-finder.jar;lib\*" monolith.app.MonolithMapApp %*
 ```
 
 `verify.bat` 编译并运行 `Verify.java`，校验核心算法（无需 LWJGL）。
@@ -145,6 +145,8 @@ if cut < 0: cut *= 4
 瓦片用 `GL_NEAREST`、`GL_CLAMP_TO_EDGE`（`0x812F`）避免瓦片边界接缝。颜色按 Rust 语义上色：monolith 红、陆地绿、水域蓝、边境之地橙。
 
 ## 输入与 UI
+
+输入由 GLFW 回调驱动：`glfwSetKeyCallback` / `glfwSetCharCallback` / `glfwSetMouseButtonCallback` / `glfwSetScrollCallback` 把事件压入队列，主循环统一处理；连续平移用 `glfwGetKey` 轮询。窗口 resize 用 `glfwSetFramebufferSizeCallback` 更新视口与正交投影。
 
 - 鼠标左键拖拽平移；滚轮/`+`/`-` 缩放（向上放大），以鼠标为锚点。
 - 左上角：种子输入框 + 应用按钮；左下角：X/Z 坐标输入框 + 应用按钮。
