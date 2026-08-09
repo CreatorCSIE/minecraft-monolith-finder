@@ -1,6 +1,6 @@
 # Monolith Finder (Java)
 
-一个用于可视化 Minecraft 版本 `inf-20100611` 至 `a1.1.2_01` 地形（含 monolith）的工具，是原 Rust/WASM 版 [monolith-renderer](https://github.com/kahomayo/monolith-renderer) 的 Java + LWJGL2 移植版。
+一个用于可视化 Minecraft 版本 `inf-20100611` 至 `a1.1.2_01` 地形（含 monolith）的工具，是原 Rust/WASM 版 [monolith-renderer](https://github.com/kahomayo/monolith-renderer) 的 Java + LWJGL3 移植版。
 
 ![示例地图](./example.png)
 
@@ -15,7 +15,7 @@
 
 ## 运行
 
-依赖：JDK 8+（建议 17+）。`lib/` 下已包含 LWJGL2 运行库。
+依赖：JDK 8+（建议 17+）。`lib/` 下已包含 LWJGL3 运行库（含各平台 native，随 classpath 自动加载）。
 
 ```bat
 compile.bat          :: 编译源码并打包为 monolith-finder.jar
@@ -23,8 +23,6 @@ run.bat [seed]       :: 运行打包好的 jar
 ```
 
 例：先执行 `compile.bat`，再执行 `run.bat 8676641231682978167`。
-
-首次编译会自动解压 native 库到 `natives/`。
 
 ### 操作
 
@@ -44,8 +42,7 @@ run.bat [seed]       :: 运行打包好的 jar
 ```
 src/                 Java 源码
 docs/                开发文档
-lib/                 LWJGL2 运行库
-natives/             本地库（首次编译自动生成）
+lib/                 LWJGL3 运行库（含各平台 native）
 build/               编译中间输出
 monolith-finder.jar  打包产物（由 compile.bat 生成）
 ```
