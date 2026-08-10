@@ -26,14 +26,7 @@ if errorlevel 1 (
 )
 del sources.txt
 
-echo Merging library classes into build...
-pushd build
-jar xf ..\lib\lwjgl.jar
-jar xf ..\lib\lwjgl_util.jar
-jar xf ..\lib\jinput.jar
-popd
-
-echo Packaging monolith-finder.jar ...
+echo Packaging monolith-finder.jar (libraries kept external) ...
 jar cfe monolith-finder.jar monolith.app.MonolithMapApp -C build .
 
 echo Done. Run with run.bat [seed]
