@@ -820,11 +820,9 @@ public final class MonolithMapApp {
         if (newBpp == oldBpp) {
             return; // 已到最远 / 最近，无变化
         }
-        double ry = winH - my;
-        double bx = centerX + (mx - winW / 2.0) * oldBpp;
-        double bz = centerZ + (ry - winH / 2.0) * oldBpp;
-        centerX = bx - (mx - winW / 2.0) * newBpp;
-        centerZ = bz - (ry - winH / 2.0) * newBpp;
+        // 以十字准星（屏幕中心）为锚点放大/缩小：相机中心方块坐标保持不动，
+        // 缩放前后屏幕中心对同一方块，与光标位置无关。
+        // （旧行为：锚定光标 (mx,my)，缩放会带动视图偏移。）
     }
 
     /** 每像素方块数 = stride * 4 / mag（mag > 1 时放大 stride-1 瓦片，更近）。 */
